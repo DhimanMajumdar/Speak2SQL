@@ -7,12 +7,12 @@ Built using **Python**, **Streamlit**, **LangChain**, **Llama 3 / DeepSeek**, an
 
 ## 📸 Demo
 
-![](images/one)
-![](images/two)
-![](images/three)
-![](images/four)
-![](images/five)
-![](images/six)
+![](images/one.png)
+![](images/two.png)
+![](images/three.png)
+![](images/four.png)
+![](images/five.png)
+![](images/six.png)
 
 ## 🚀 Features
 
