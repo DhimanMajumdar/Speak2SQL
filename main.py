@@ -1,34 +1,40 @@
-# step1: extract schema
-
-from sqlalchemy import column, create_engine,inspect, schema
 import json
 import re
 import sqlite3
-
-db_url="sqlite:///amazon.db"
-
-def extract_schema(db_url):
-    engine = create_engine(db_url)
-    inspector = inspect(engine)
-    schema = {}
-
-    for table_name in inspector.get_table_names():
-        columns = inspector.get_columns(table_name)
-        schema[table_name] = [col['name'] for col in columns]
-    return json.dumps(schema)
-
-
-# step2: text to sql (deepseek with ollama)
-
+from sqlalchemy import create_engine, inspect
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_ollama import OllamaLLM
 
 
+DB_URL = "sqlite:///amazon.db"
+
+
+# ---------------------------------------------------------
+# STEP 1: Extract DB Schema
+# ---------------------------------------------------------
+def extract_schema(db_url):
+    engine = create_engine(db_url)
+    inspector = inspect(engine)
+
+    schema = {}
+    for table_name in inspector.get_table_names():
+        columns = inspector.get_columns(table_name)
+        schema[table_name] = [col["name"] for col in columns]
+
+    return json.dumps(schema, indent=2)
+
+
+# ---------------------------------------------------------
+# STEP 2: Convert Natural Language → SQL (Llama3, safe)
+# ---------------------------------------------------------
 def text_to_sql(schema, prompt):
     SYSTEM_PROMPT = """
-    You are an expert SQL generator. Given a database schema and a user prompt, generate a valid SQL query that answers the prompt. 
-    Only use the tables and columns provided in the schema. ALWAYS ensure the SQL syntax is correct and avoid using any unsupported features. 
-    Output only the SQL as your response will be directly used to query data from the database. No preamble please. Do not use <think> tags.
+    You are an expert SQL generator. 
+    Given a database schema and a user question, generate a VALID SQLite SQL query.
+    - Use ONLY tables & columns from the schema.
+    - Do NOT hallucinate table names.
+    - Output only SQL. No explanation.
+    - No <think> or reasoning tags.
     """
 
     prompt_template = ChatPromptTemplate.from_messages([
@@ -36,31 +42,42 @@ def text_to_sql(schema, prompt):
         ("user", "Schema:\n{schema}\n\nQuestion: {user_prompt}\n\nSQL Query:")
     ])
 
-    model = OllamaLLM(model="deepseek-r1:8b", temperature=0) 
+    model = OllamaLLM(
+        model="llama3:8b",      # SQL-friendly model (no think tags)
+        temperature=0,
+        timeout=10              # ⬅ prevents infinite hanging
+    )
 
     chain = prompt_template | model
 
-    raw_response = chain.invoke({"schema": schema, "user_prompt": prompt})
-    cleaned_response = re.sub(r"<think>.*?</think>", "", raw_response, flags=re.DOTALL)
-    return cleaned_response.strip()
+    raw = chain.invoke({"schema": schema, "user_prompt": prompt})
 
-# schema=extract_schema(db_url)
-# prompt="Tell me the names of all the customers"
-# sql_query=text_to_sql(schema,prompt)    
+    # Remove any stray reasoning tokens (safety)
+    cleaned = re.sub(r"<think>[\s\S]*?</think>", "", raw).strip()
 
-# db_path="amazon.db"
-# conn=sqlite3.connect(db_path)
-# cursor=conn.cursor()
-# results=cursor.execute(sql_query)
-# print("Results: ", results.fetchall())
+    return cleaned
 
+
+# ---------------------------------------------------------
+# STEP 3: Execute SQL safely
+# ---------------------------------------------------------
 def get_data_from_database(prompt):
-    schema = extract_schema(db_url)
-    sql_query = text_to_sql(schema, prompt)
-    conn = sqlite3.connect("amazon.db")
-    cursor = conn.cursor()
-    res = cursor.execute(sql_query)
-    results = res.fetchall()
-    conn.close()
-    return results
-# build streamlit frontend
+    schema = extract_schema(DB_URL)
+
+    try:
+        sql_query = text_to_sql(schema, prompt)
+    except Exception as e:
+        return f"❌ ERROR generating SQL:\n{e}"
+
+    try:
+        conn = sqlite3.connect("amazon.db")
+        cursor = conn.cursor()
+        rows = cursor.execute(sql_query).fetchall()
+        conn.close()
+        return rows
+
+    except Exception as e:
+        return (
+            f"❌ SQL Execution Error:\n{e}\n\n"
+            f"Generated SQL was:\n{sql_query}"
+        )
